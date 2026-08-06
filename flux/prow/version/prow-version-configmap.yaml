@@ -1,5 +1,12 @@
 # Prow image versions for postBuild substitution.
 # Updated by ./scripts/upgrade-prow.sh or manually.
+#
+# PROW_PATCH_REVISION is appended to the mirrored image tags as
+# "-ack.<revision>". The prow-mirror Job rebuilds the upstream images with
+# current OS packages and publishes them under that suffixed tag; nothing
+# consumes the bare upstream tag. Bump the revision to force a rebuild against
+# freshly published OS security updates without changing the Prow version, then
+# force-reconcile the prow-mirror Kustomization.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,3 +15,4 @@ metadata:
 data:
   PROW_VERSION: "v20260702-fff8399c7"
   TOOLS_VERSION: "v20260515-778139c32d"
+  PROW_PATCH_REVISION: "1"

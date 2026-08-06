@@ -141,8 +141,17 @@ git push
 
 ## Upgrading Prow
 
-Prow images are mirrored from upstream into a private ECR registry. The version
-is controlled by a single ConfigMap (`flux/prow/version/prow-version-configmap.yaml`).
+Prow images are mirrored from upstream into a private ECR registry **and rebuilt
+with current OS packages** on the way through. Upstream Prow pins its ko base
+images in `.ko.yaml` and only refreshes that pin every few months, so even the
+newest Prow release ships stale `expat`/`openssl`/`curl`. The `prow-mirror` Job
+runs `apk upgrade` over each image and publishes it as
+`<upstream-tag>-ack.<PROW_PATCH_REVISION>`. Nothing consumes the bare upstream
+tag — the mirror Kustomization reconciles hourly with `force: true`, so anything
+written to the bare tag would be reverted on the next run.
+
+Both the version and the patch revision live in a single ConfigMap
+(`flux/prow/version/prow-version-configmap.yaml`).
 
 ```bash
 # Auto-detect latest tags for both Prow core and tools, update CRD
@@ -154,16 +163,41 @@ is controlled by a single ConfigMap (`flux/prow/version/prow-version-configmap.y
 # Preview changes without modifying files
 ./scripts/upgrade-prow.sh --dry-run
 
+# Re-patch the CURRENT Prow version against newly published OS security
+# updates, without moving to a new upstream release. Increments
+# PROW_PATCH_REVISION, which is what makes the mirror Job rebuild.
+./scripts/upgrade-prow.sh --bump-patch
+
 # Commit and push
 git add flux/prow/ prow/config/
 git commit -m "chore(prow): upgrade to <tag>"
 git push
-# Flux reconciles: mirror job copies new images to ECR, then Prow redeploys
+# Flux reconciles: mirror job rebuilds patched images into ECR, then Prow redeploys
 ```
+
+Changing `PROW_VERSION` or `TOOLS_VERSION` resets `PROW_PATCH_REVISION` to `1`,
+because a newly pinned upstream tag has not been patched yet.
 
 Image sources:
 - Prow core: `us-docker.pkg.dev/k8s-infra-prow/images` (13 images)
 - Tools (`label_sync`, `commenter`): `gcr.io/k8s-staging-test-infra`
+
+The mirror Job refuses to publish an image whose base has no `apk`, rather than
+silently shipping it unpatched. If upstream moves a component to a distroless
+base, that component will fail loudly and needs a different patch strategy.
+
+### Reacting to a container remediation finding
+
+Container findings against `.../prow/<component>` are almost always stale OS
+packages in the upstream base image, not a Prow defect. Bumping the Prow version
+alone usually does **not** fix them. Run `./scripts/upgrade-prow.sh --bump-patch`,
+push, then force-reconcile `prow-mirror`.
+
+Findings against `public.ecr.aws/<alias>/...-prow-images:*` are our own job
+images. Those Dockerfiles apply OS updates at build time, so bump the relevant
+tag in `prow/jobs/images_config.yaml` (or the plugins / agent-workflows
+equivalent), run `make prow-gen`, and let the `build-prow-images` postsubmit
+rebuild them.
 
 ## Re-running Terraform
 
@@ -234,6 +268,8 @@ Common kustomization names:
 | `ack-prow` | Prow AWS resources (S3, Route53) |
 | `ack-flux` | ECR pull-through cache |
 | `prow-crds` | Prow CRDs |
+| `prow-version` | `prow-version` ConfigMap (Prow/tools versions + patch revision) |
+| `prow-mirror` | Job that rebuilds upstream Prow images with current OS packages |
 | `prow-charts` | Prow Helm releases |
 
 If a kustomization shows `dependency '<name>' is not ready`, trigger the
